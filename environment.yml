@@ -1,0 +1,19 @@
+name: offline-glucose
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.8
+  - conda>=4.9.2
+  - pip>=21.2.4
+  - cudatoolkit=10.2
+  - jupyterlab
+  - pip:
+    - -f https://download.pytorch.org/whl/torch_stable.html
+    - gym==0.9.4  
+    - torch==1.7.1+cu101
+    - torchvision==0.8.2+cu101
+    - matplotlib==3.5.1
+    - numpy==1.22.3   
+    - git+https://github.com/hemerson1/simglucose.git
+
