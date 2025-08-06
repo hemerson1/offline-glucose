@@ -18,8 +18,10 @@ from .general import PID_action, calculate_bolus, calculate_risk
 """
 Create a replay with a mixture of expert data and random data.
 """
-def fill_replay_split(env, replay_name, data_split=0.5, replay_length=100_000, meal_announce=0,
-                      noise=False, bolus_noise=None, bolus_overestimate=0.0, seed=0, params=None):
+def fill_replay_split(
+    env, replay_name, data_split=0.5, replay_length=100_000, meal_announce=0,
+    noise=False, bolus_noise=None, bolus_overestimate=0.0, seed=0, missing_data_prob=0.0, 
+    compression_prob=0.0, params=None):
     
     # determine the split of the two datasets
     random_timesteps = int(data_split * replay_length) 
@@ -35,6 +37,8 @@ def fill_replay_split(env, replay_name, data_split=0.5, replay_length=100_000, m
                                  player="random", bolus_noise=bolus_noise, 
                                  noise=False, meal_announce=meal_announce,
                                  bolus_overestimate=bolus_overestimate,
+                                 missing_data_prob=missing_data_prob,
+                                 compression_prob=compression_prob,
                                  seed=seed, params=params
                                  )
         print('Buffer Full with Random policy of size {}'.format(random_timesteps))  
@@ -50,6 +54,8 @@ def fill_replay_split(env, replay_name, data_split=0.5, replay_length=100_000, m
                                   bolus_noise=bolus_noise, seed=seed, 
                                   bolus_overestimate=bolus_overestimate,
                                   meal_announce=meal_announce,
+                                  missing_data_prob=missing_data_prob,
+                                  compression_prob=compression_prob,
                                   noise=noise,
                                   params=params
                                   )
@@ -67,8 +73,10 @@ demonstrator. The replay produced is a list containing individual trajectories
 stopping when the agent terminates or the max number of days is reached.
 """
 
-def fill_replay(env, replay_name, replay=None, replay_length=100_000, player='random', meal_announce=0.0,
-                bolus_noise=None, seed=0, params=None, noise=False, bolus_overestimate=0.0):
+def fill_replay(
+    env, replay_name, replay=None, replay_length=100_000, player='random',
+    meal_announce=0.0, bolus_noise=None, seed=0, params=None, noise=False,
+    bolus_overestimate=0.0, missing_data_prob=0.0, compression_prob=0.0):
     
     # Unpack the additional parameters
     
@@ -122,6 +130,13 @@ def fill_replay(env, replay_name, replay=None, replay_length=100_000, player='ra
         # record the trajectory and the current timestep
         trajectory = defaultdict(list)
         episode_timestep = 0
+        
+        # count missing data period
+        missing_period = 0
+        
+        # add compression error
+        compression_period = 0
+        compression_size = 0
 
         while not done:  
             
@@ -168,6 +183,7 @@ def fill_replay(env, replay_name, replay=None, replay_length=100_000, player='ra
                 
                 # add a bias to the bolus estimation
                 adjusted_meal += bolus_overestimate * meal  
+                adjusted_meal = max(0, adjusted_meal)
                 
                 # calculate the bolus dose 
                 chosen_action = calculate_bolus(
@@ -207,16 +223,40 @@ def fill_replay(env, replay_name, replay=None, replay_length=100_000, player='ra
                 
             # configure the next state  ----------------------------------------
             
-            time = ((env.env.time.hour * 60) / 3 + env.env.time.minute / 3) / 479            
+            # add missing data to the dataset
+            rand = np.random.rand()
+            if (rand < missing_data_prob) or (missing_period > 0):    
+                if missing_period < 1:
+                    prev_bg = 144 # bg_val[0]
+                    missing_period = np.random.randint(10)                    
+                next_bg_val = [next_bg_val[0]]
+                next_bg_val[0] = 144 # prev_bg 
+            
+            # add compression error
+            rand = np.random.rand()
+            if (rand < compression_prob) or (compression_period > 0):
+                if compression_period < 1:                     
+                    compression_period = np.random.randint(10)
+                    compression_size = np.random.randint(30)
+                next_bg_val = [next_bg_val[0]]
+                next_bg_val[0] -= compression_size
+            
+            # step forward in time 
+            missing_period -= 1  
+            compression_period -= 1
+            
+            time = ((env.env.time.hour * 60)/3 + env.env.time.minute/3)/479            
             next_state = np.array([next_bg_val[0], meal_input, chosen_action[0], time], dtype=np.float32)                    
             
             # add a termination penalty
-            if done: reward = -1e5
+            if done: 
+                reward = -1e5
             
             # update the replay ---------------------------------------------
                        
             # update the replay with trajectory
-            sample = [('reward', reward), ('state', state), ('next_state', next_state), ('action', agent_action), ('done', done)]
+            sample = [('reward', reward), ('state', state), ('next_state', next_state), 
+                      ('action', agent_action), ('done', done)]
                         
             for key, value in sample:
                 trajectory[key].append(value)
@@ -238,7 +278,7 @@ def fill_replay(env, replay_name, replay=None, replay_length=100_000, player='ra
             episode_timestep += 1              
             
             # save the replay ----------------------------------------------
-                        
+                
             # visualise replay size
             if counter % replay_progress_freq == 0:
                 print('Replay size: {}'.format(counter))
